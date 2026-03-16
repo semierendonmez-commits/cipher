@@ -351,7 +351,7 @@ function UI.draw_nodes(scr)
 
   -- parameter list
   local start = math.max(1, Core.param_idx - 3)
-  local visible = math.min(#NODE_PARAMS, start + 5)
+  local visible = math.min(Core.NUM_NODE_PARAMS, start + 5)
   for row = start, visible do
     local y = 24 + (row - start) * 8
     local is_sel = (row == Core.param_idx)

@@ -100,6 +100,7 @@ local NODE_PARAMS = {
 local NODE_PARAM_NAMES = {
   "freq", "filter", "reso", "f.type", "delay", "d.fb", "drive", "level", "pan", "impulse"
 }
+Core.NUM_NODE_PARAMS = #NODE_PARAMS
 
 -- ============ TURING MACHINE ============
 
