@@ -93,6 +93,8 @@ Core.PAGE_NAMES = {"GARDEN", "MORSE", "NETWORK", "NODES"}
 
 Core.node_sel = 1  -- selected node for NODES page
 Core.param_idx = 1 -- scroll position within page
+local e1_acc = 0   -- accumulator for E1 coarse stepping
+local E1_THRESH = 3 -- ticks needed to trigger a change
 
 local NODE_PARAMS = {
   "freq", "filt", "res", "ftype", "dly", "dfb", "drv", "lvl", "pan", "imp_type"
@@ -106,11 +108,16 @@ Core.NUM_NODE_PARAMS = #NODE_PARAMS
 
 local function tm_tick()
   TM.step = (TM.step % TM.len) + 1
+  -- proper shift register: XOR feedback from taps at bits 0, 2, 5, 11
+  local fb_bit = ((TM.reg >> 0) ~ (TM.reg >> 2) ~ (TM.reg >> 5) ~ (TM.reg >> 11)) & 1
+  -- probability controls how often we use feedback vs random
   if math.random(100) <= TM.prob then
-    TM.reg = TM.reg ~ 1  -- flip LSB
+    -- use XOR feedback (structured chaos)
+    TM.reg = (TM.reg >> 1) | (fb_bit << 15)
+  else
+    -- inject random bit (pure chaos)
+    TM.reg = (TM.reg >> 1) | (math.random(0, 1) << 15)
   end
-  local lsb = TM.reg & 1
-  TM.reg = (TM.reg >> 1) | (lsb << 15)
   TM.out = TM.reg & 0x1F  -- 5 bits = 0-31
   return TM.out
 end
@@ -173,27 +180,46 @@ end
 
 -- ============ SEQUENCER TICK ============
 
+local auto_mutate_timer = 0
+local AUTO_MUTATE_EVERY = 15  -- seconds between auto-mutations
+
 function Core.seq_tick(dt)
   if not SEQ.running then return nil end
   SEQ.tick_acc = SEQ.tick_acc + dt * SEQ.speed
 
+  -- auto-mutate: periodically shift the register and regenerate L-system
+  auto_mutate_timer = auto_mutate_timer + dt
+  if auto_mutate_timer >= AUTO_MUTATE_EVERY then
+    auto_mutate_timer = 0
+    -- partial mutation: new L-system but keep TM register evolving
+    LS.preset = math.random(1, #LSYS_PRESETS)
+    LS.gens = math.random(3, 5)
+    lsys_generate()
+    -- inject entropy into TM
+    TM.reg = TM.reg ~ math.random(0, 65535)
+  end
+
   -- generate new characters when queue is low
-  if #MS.queue < 8 and SEQ.auto_gen then
+  if #MS.queue < 6 and SEQ.auto_gen then
     local tm_val = tm_tick()
     local ls_emit = lsys_tick()
+
     if ls_emit then
-      -- TM determines character, L-system determines phrasing
-      local idx = (tm_val % #ALPHA) + 1
+      -- combine TM output with L-system pitch for character index
+      local idx = ((tm_val + LS.pitch * 3) % #ALPHA) + 1
       enqueue_character(idx)
-      -- occasional word gap based on L-system pitch
-      if LS.pitch > 8 and math.random(100) < 30 then
+      -- word gaps driven by L-system structure
+      if LS.pitch > 8 and math.random(100) < 35 then
         enqueue_word_gap()
       end
     else
-      -- L-system says rest: maybe insert gap
-      if math.random(100) < math.floor(SEQ.density * 40) then
-        local idx = (tm_val % #ALPHA) + 1
+      -- rest period: density controls how often we still emit
+      if math.random(100) < math.floor(SEQ.density * 30) then
+        -- use random offset so rest-characters differ from emit-characters
+        local idx = ((tm_val + math.random(5, 15)) % #ALPHA) + 1
         enqueue_character(idx)
+      elseif math.random(100) < 12 then
+        enqueue_word_gap()
       end
     end
   end
@@ -261,6 +287,7 @@ function Core.toggle_play()
   SEQ.running = not SEQ.running
   if SEQ.running then
     MS.queue = {}; MS.timer = 0; SEQ.tick_acc = 0
+    auto_mutate_timer = 0; fire_counter = 0
   end
   return SEQ.running
 end
@@ -274,6 +301,7 @@ function Core.mutate()
   lsys_generate()
   MS.queue = {}
   MS.decoded = {}
+  auto_mutate_timer = 0
 end
 
 function Core.randomize_matrix()
@@ -336,22 +364,42 @@ function Core.send_all()
 end
 
 -- trigger a morse event into the network
+local fire_counter = 0
+
 function Core.fire_morse(evt)
   if not evt then return end
+  fire_counter = fire_counter + 1
   local dur = evt.dur or 0.05
-  -- which nodes to trigger: based on TM register bits
-  local bits = TM.reg & 0xF
+
+  -- node selection: rotate through different bit windows of TM register
+  local shift = (fire_counter * 3) % 12
+  local bits = (TM.reg >> shift) & 0xF
+  -- ensure at least one node fires
+  if bits == 0 then bits = 1 << (fire_counter % 4) end
+
   for n = 0, 3 do
     if (bits >> n) & 1 == 1 then
       local nd = Core.nodes[n + 1]
-      local freq = nd.freq * (1 + LS.pitch * 0.05)
-      local tp = nd.imp_type
-      if evt.type == "dash" then
-        dur = dur * 1.5
-        freq = freq * 0.8  -- dashes are lower
+      -- wider pitch variation: L-system pitch + TM output + occasional octave
+      local pitch_mult = 1 + LS.pitch * 0.08 + (TM.out % 7) * 0.03
+      -- random octave shifts on some hits
+      if math.random(100) < 15 then
+        pitch_mult = pitch_mult * (math.random(1, 3) == 1 and 2.0 or 0.5)
       end
-      engine.trig(n, freq, dur, 0.7, tp)
-      Core.anim.last_trig[n + 1] = 8  -- visual flash frames
+      local freq = nd.freq * pitch_mult
+      local tp = nd.imp_type
+      local amp = 0.5 + math.random() * 0.4
+
+      if evt.type == "dash" then
+        dur = dur * (1.2 + math.random() * 0.8)
+        freq = freq * (0.6 + math.random() * 0.3)
+        amp = amp * 0.8
+      else
+        dur = dur * (0.8 + math.random() * 0.4)
+      end
+
+      engine.trig(n, freq, dur, amp, tp)
+      Core.anim.last_trig[n + 1] = 8
     end
   end
 end
@@ -529,7 +577,11 @@ function Core.enc(n, d)
   elseif Core.page == 4 then
     -- NODES: E1=select node, E2=scroll params, E3=adjust value
     if n == 1 then
-      Core.node_sel = util.clamp(Core.node_sel + d, 1, 4)
+      e1_acc = e1_acc + d
+      if math.abs(e1_acc) >= E1_THRESH then
+        Core.node_sel = util.clamp(Core.node_sel + (e1_acc > 0 and 1 or -1), 1, 4)
+        e1_acc = 0
+      end
     elseif n == 2 then
       Core.param_idx = util.clamp(Core.param_idx + d, 1, #NODE_PARAMS)
     elseif n == 3 then
