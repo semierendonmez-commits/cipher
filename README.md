@@ -14,7 +14,7 @@ telegraph meets no-input mixer. the garden grows from the noise.
 ## install
 
 ```
-;install https://github.com/yourusername/cipher
+;install https://github.com/semierendonmez-commits/cipher
 ```
 
 after install: **SYSTEM > RESTART** (new SC engine).
