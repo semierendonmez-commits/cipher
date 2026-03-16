@@ -15,9 +15,10 @@ Engine_Cipher : CroneEngine {
     var s, out_bus, in_bus;
     s = context.server;
 
-    // norns: out_b and in_b are Arrays of mono Buses
-    out_bus = context.out_b[0].index;
-    in_bus  = context.in_b[0].index;
+    // norns: out_b/in_b can be Bus or Array depending on version
+    // Bus.index gives first channel, +1 gives second
+    out_bus = context.out_b.index;
+    in_bus  = context.in_b.index;
 
     nodeBuses = Array.fill(4, { Bus.audio(s, 1) });
     ampBus = Bus.control(s, 4);
