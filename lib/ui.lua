@@ -84,7 +84,7 @@ function UI.draw(scr)
   elseif Core.page == 3 then
     scr.text("E1:sel E2/3:lvl K3:rnd")
   elseif Core.page == 4 then
-    scr.text("E1:prm E2:adj E3:node")
+    scr.text("E1:node E2:prm E3:adj")
   end
 
   scr.update()

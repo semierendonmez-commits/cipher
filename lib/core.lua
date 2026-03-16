@@ -527,10 +527,12 @@ function Core.enc(n, d)
       engine.route(src, dst, v)
     end
   elseif Core.page == 4 then
-    -- NODES: E1=scroll params, E2=adjust, E3=select node
+    -- NODES: E1=select node, E2=scroll params, E3=adjust value
     if n == 1 then
-      Core.param_idx = util.clamp(Core.param_idx + d, 1, #NODE_PARAMS)
+      Core.node_sel = util.clamp(Core.node_sel + d, 1, 4)
     elseif n == 2 then
+      Core.param_idx = util.clamp(Core.param_idx + d, 1, #NODE_PARAMS)
+    elseif n == 3 then
       local pname = NODE_PARAMS[Core.param_idx]
       local pid = "n" .. Core.node_sel .. "_" .. pname
       if pname == "ftype" or pname == "imp_type" then
@@ -539,9 +541,6 @@ function Core.enc(n, d)
       else
         params:delta(pid, d)
       end
-    elseif n == 3 then
-      Core.node_sel = util.clamp(Core.node_sel + d, 1, 4)
-      Core.param_idx = 1
     end
   end
 end
