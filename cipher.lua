@@ -212,13 +212,15 @@ end
 local function seq_loop()
   while true do
     clock.sleep(1 / 60)  -- 60Hz sequencer resolution
-    local evt = Core.seq_tick(1 / 60)
-    if evt then
-      Core.fire_morse(evt)
+    local ok, err = pcall(Core.seq_tick, 1 / 60)
+    if ok and err then
+      Core.fire_morse(err)
       screen_dirty = true
       grid_dirty = true
+    elseif not ok then
+      print("cipher seq error: " .. tostring(err))
     end
-    Core.update_garden()
+    pcall(Core.update_garden)
   end
 end
 
@@ -226,11 +228,12 @@ local function screen_loop()
   while true do
     clock.sleep(1 / 15)
     if screen_dirty then
-      UI.draw(screen)
+      local ok, err = pcall(UI.draw, screen)
+      if not ok then print("cipher draw error: " .. tostring(err)) end
       screen_dirty = false
     end
     if grid_dirty and g then
-      grid_redraw()
+      pcall(grid_redraw)
       grid_dirty = false
     end
   end

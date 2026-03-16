@@ -232,19 +232,12 @@ function UI.draw_morse(scr)
   scr.move(128, 38)
   scr.text_right("LS:" .. params:string("lsys_preset"))
 
-  -- upcoming queue preview
-  scr.level(2)
-  scr.move(2, 46)
-  scr.text("queue:")
-  local qstr = ""
-  for i = 1, math.min(16, #Core.anim.morse_queue or 0) do
-    -- we don't have direct queue access from UI, show density instead
-  end
+  -- density and speed info
   scr.level(5)
-  scr.move(40, 46)
+  scr.move(2, 46)
   local d = params:get("density")
   scr.text("D:" .. string.format("%.0f%%", d * 100))
-  scr.move(80, 46)
+  scr.move(40, 46)
   scr.text("S:" .. string.format("%.1f", params:get("speed")))
 
   -- signal strength meter
