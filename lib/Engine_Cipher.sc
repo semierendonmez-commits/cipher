@@ -1,25 +1,34 @@
 // lib/Engine_Cipher.sc
 // cipher: 4-node feedback network + morse impulse generator
-// routing matrix determines topology
+// routing matrix via NamedControl (avoids arg count limit)
 // vanilla UGens only - no sc3-plugins
 
 Engine_Cipher : CroneEngine {
   var synth;
   var nodeBuses;
   var ampBus;
+  var routeBus;
 
   *new { |context, doneCallback| ^super.new(context, doneCallback) }
 
   alloc {
-    var s;
+    var s, out_bus, in_bus;
     s = context.server;
+
+    // norns: out_b and in_b are Arrays of mono Buses
+    out_bus = context.out_b[0].index;
+    in_bus  = context.in_b[0].index;
 
     nodeBuses = Array.fill(4, { Bus.audio(s, 1) });
     ampBus = Bus.control(s, 4);
+    routeBus = Bus.control(s, 16);
 
-    // -- morse impulse: short tone injected into a node bus --
+    // init route bus to zeros
+    routeBus.setn(Array.fill(16, { 0 }));
+
+    // -- morse impulse --
     SynthDef(\cipher_imp, {
-      arg out_bus, freq=440, dur=0.05, amp=0.8, type=0;
+      arg imp_bus, freq=440, dur=0.05, amp=0.8, type=0;
       var sig, env;
       env = EnvGen.ar(Env.linen(0.002, dur, dur * 0.5, 1, -4),
         doneAction: Done.freeSelf);
@@ -30,140 +39,117 @@ Engine_Cipher : CroneEngine {
         Impulse.ar(freq * 8) * 0.5
       ]);
       sig = sig * env * amp;
-      Out.ar(out_bus, sig);
+      Out.ar(imp_bus, sig);
     }).add;
 
     // -- main feedback network --
     SynthDef(\cipher_net, {
-      arg out_bus, ext_in_bus,
-          in_bus_0, in_bus_1, in_bus_2, in_bus_3,
-          // node filter cutoff
-          filt_0=2000, filt_1=3000, filt_2=1200, filt_3=600,
-          // node filter resonance (0.05 - 1.0)
-          res_0=0.4, res_1=0.5, res_2=0.6, res_3=0.3,
-          // node filter type (0=LP, 1=BP, 2=HP)
-          ftype_0=0, ftype_1=1, ftype_2=0, ftype_3=2,
-          // node delay time
-          dly_0=0.12, dly_1=0.19, dly_2=0.25, dly_3=0.37,
-          // node delay feedback
-          dfb_0=0.4, dfb_1=0.3, dfb_2=0.5, dfb_3=0.2,
-          // node saturation drive
-          drv_0=1.0, drv_1=1.2, drv_2=0.8, drv_3=1.5,
-          // node level
-          lvl_0=0.5, lvl_1=0.5, lvl_2=0.5, lvl_3=0.5,
-          // node pan (-1 to 1)
-          pan_0=(-0.6), pan_1=0.6, pan_2=(-0.2), pan_3=0.2,
-          // routing matrix (r_IJ = from node I to node J input)
-          r_00=0, r_01=0, r_02=0, r_03=0,
-          r_10=0, r_11=0, r_12=0, r_13=0,
-          r_20=0, r_21=0, r_22=0, r_23=0,
-          r_30=0, r_31=0, r_32=0, r_33=0,
-          // external input
-          ext_lvl=0,
-          // master
-          amp=0.5,
-          // poll bus
-          amp_bus;
+      arg net_out, ext_in,
+          nb0, nb1, nb2, nb3,
+          filt0=2000, filt1=3000, filt2=1200, filt3=600,
+          res0=0.4, res1=0.5, res2=0.6, res3=0.3,
+          ft0=0, ft1=1, ft2=0, ft3=2,
+          dt0=0.12, dt1=0.19, dt2=0.25, dt3=0.37,
+          fb0=0.4, fb1=0.3, fb2=0.5, fb3=0.2,
+          dv0=1.0, dv1=1.2, dv2=0.8, dv3=1.5,
+          lv0=0.5, lv1=0.5, lv2=0.5, lv3=0.5,
+          pn0=(-0.6), pn1=0.6, pn2=(-0.2), pn3=0.2,
+          ext_lvl=0, amp=0.5,
+          poll_bus, route_bus;
 
-      // -- all var declarations at top --
-      var fb;
-      var inp_0, inp_1, inp_2, inp_3;
-      var mix_0, mix_1, mix_2, mix_3;
-      var f_0, f_1, f_2, f_3;
-      var d_0, d_1, d_2, d_3;
-      var out_0, out_1, out_2, out_3;
-      var ext_in, sig_out;
-      var n_amps;
+      // read routing matrix from control bus
+      var r;
+      var prev;
+      var i0, i1, i2, i3;
+      var m0, m1, m2, m3;
+      var fo0, fo1, fo2, fo3;
+      var dl0, dl1, dl2, dl3;
+      var o0, o1, o2, o3;
+      var ei, sig;
+      var amps;
 
-      // previous frame feedback
-      fb = LocalIn.ar(4);
+      r = In.kr(route_bus, 16);
+      prev = LocalIn.ar(4);
 
-      // morse impulse inputs from buses
-      inp_0 = InFeedback.ar(in_bus_0);
-      inp_1 = InFeedback.ar(in_bus_1);
-      inp_2 = InFeedback.ar(in_bus_2);
-      inp_3 = InFeedback.ar(in_bus_3);
+      i0 = InFeedback.ar(nb0);
+      i1 = InFeedback.ar(nb1);
+      i2 = InFeedback.ar(nb2);
+      i3 = InFeedback.ar(nb3);
 
-      // external audio
-      ext_in = SoundIn.ar(0) * ext_lvl;
+      ei = SoundIn.ar(0) * ext_lvl;
 
-      // -- mix: impulse + matrix feedback + ext --
-      mix_0 = inp_0 + (fb[0]*r_00) + (fb[1]*r_10) + (fb[2]*r_20) + (fb[3]*r_30) + ext_in;
-      mix_1 = inp_1 + (fb[0]*r_01) + (fb[1]*r_11) + (fb[2]*r_21) + (fb[3]*r_31) + ext_in;
-      mix_2 = inp_2 + (fb[0]*r_02) + (fb[1]*r_12) + (fb[2]*r_22) + (fb[3]*r_32) + ext_in;
-      mix_3 = inp_3 + (fb[0]*r_03) + (fb[1]*r_13) + (fb[2]*r_23) + (fb[3]*r_33) + ext_in;
+      // matrix mix: r[row*4 + col] = from row to col
+      m0 = i0 + (prev[0]*r[0])  + (prev[1]*r[4])  + (prev[2]*r[8])  + (prev[3]*r[12]) + ei;
+      m1 = i1 + (prev[0]*r[1])  + (prev[1]*r[5])  + (prev[2]*r[9])  + (prev[3]*r[13]) + ei;
+      m2 = i2 + (prev[0]*r[2])  + (prev[1]*r[6])  + (prev[2]*r[10]) + (prev[3]*r[14]) + ei;
+      m3 = i3 + (prev[0]*r[3])  + (prev[1]*r[7])  + (prev[2]*r[11]) + (prev[3]*r[15]) + ei;
 
-      // -- node 0: filter -> delay -> clip --
-      f_0 = Select.ar(ftype_0, [
-        RLPF.ar(mix_0, filt_0.clip(20,20000), res_0.clip(0.05,1)),
-        BPF.ar(mix_0, filt_0.clip(20,20000), res_0.clip(0.05,1)),
-        RHPF.ar(mix_0, filt_0.clip(20,20000), res_0.clip(0.05,1))
+      // node 0
+      fo0 = Select.ar(ft0, [
+        RLPF.ar(m0, filt0.clip(20,20000), res0.clip(0.05,1)),
+        BPF.ar(m0, filt0.clip(20,20000), res0.clip(0.05,1)),
+        RHPF.ar(m0, filt0.clip(20,20000), res0.clip(0.05,1))
       ]);
-      d_0 = CombC.ar(f_0, 2.0, dly_0.clip(0.001,2.0), dfb_0 * 5);
-      out_0 = (d_0 * drv_0).tanh * lvl_0;
+      dl0 = CombC.ar(fo0, 2.0, dt0.clip(0.001,2.0), fb0 * 5);
+      o0 = (dl0 * dv0).tanh * lv0;
 
-      // -- node 1 --
-      f_1 = Select.ar(ftype_1, [
-        RLPF.ar(mix_1, filt_1.clip(20,20000), res_1.clip(0.05,1)),
-        BPF.ar(mix_1, filt_1.clip(20,20000), res_1.clip(0.05,1)),
-        RHPF.ar(mix_1, filt_1.clip(20,20000), res_1.clip(0.05,1))
+      // node 1
+      fo1 = Select.ar(ft1, [
+        RLPF.ar(m1, filt1.clip(20,20000), res1.clip(0.05,1)),
+        BPF.ar(m1, filt1.clip(20,20000), res1.clip(0.05,1)),
+        RHPF.ar(m1, filt1.clip(20,20000), res1.clip(0.05,1))
       ]);
-      d_1 = CombC.ar(f_1, 2.0, dly_1.clip(0.001,2.0), dfb_1 * 5);
-      out_1 = (d_1 * drv_1).tanh * lvl_1;
+      dl1 = CombC.ar(fo1, 2.0, dt1.clip(0.001,2.0), fb1 * 5);
+      o1 = (dl1 * dv1).tanh * lv1;
 
-      // -- node 2 --
-      f_2 = Select.ar(ftype_2, [
-        RLPF.ar(mix_2, filt_2.clip(20,20000), res_2.clip(0.05,1)),
-        BPF.ar(mix_2, filt_2.clip(20,20000), res_2.clip(0.05,1)),
-        RHPF.ar(mix_2, filt_2.clip(20,20000), res_2.clip(0.05,1))
+      // node 2
+      fo2 = Select.ar(ft2, [
+        RLPF.ar(m2, filt2.clip(20,20000), res2.clip(0.05,1)),
+        BPF.ar(m2, filt2.clip(20,20000), res2.clip(0.05,1)),
+        RHPF.ar(m2, filt2.clip(20,20000), res2.clip(0.05,1))
       ]);
-      d_2 = CombC.ar(f_2, 2.0, dly_2.clip(0.001,2.0), dfb_2 * 5);
-      out_2 = (d_2 * drv_2).tanh * lvl_2;
+      dl2 = CombC.ar(fo2, 2.0, dt2.clip(0.001,2.0), fb2 * 5);
+      o2 = (dl2 * dv2).tanh * lv2;
 
-      // -- node 3 --
-      f_3 = Select.ar(ftype_3, [
-        RLPF.ar(mix_3, filt_3.clip(20,20000), res_3.clip(0.05,1)),
-        BPF.ar(mix_3, filt_3.clip(20,20000), res_3.clip(0.05,1)),
-        RHPF.ar(mix_3, filt_3.clip(20,20000), res_3.clip(0.05,1))
+      // node 3
+      fo3 = Select.ar(ft3, [
+        RLPF.ar(m3, filt3.clip(20,20000), res3.clip(0.05,1)),
+        BPF.ar(m3, filt3.clip(20,20000), res3.clip(0.05,1)),
+        RHPF.ar(m3, filt3.clip(20,20000), res3.clip(0.05,1))
       ]);
-      d_3 = CombC.ar(f_3, 2.0, dly_3.clip(0.001,2.0), dfb_3 * 5);
-      out_3 = (d_3 * drv_3).tanh * lvl_3;
+      dl3 = CombC.ar(fo3, 2.0, dt3.clip(0.001,2.0), fb3 * 5);
+      o3 = (dl3 * dv3).tanh * lv3;
 
-      // -- feedback --
-      LocalOut.ar([out_0, out_1, out_2, out_3]);
+      LocalOut.ar([o0, o1, o2, o3]);
 
-      // -- stereo mix --
-      sig_out = Pan2.ar(out_0, pan_0) + Pan2.ar(out_1, pan_1)
-              + Pan2.ar(out_2, pan_2) + Pan2.ar(out_3, pan_3);
-      sig_out = Limiter.ar(sig_out * amp, 0.95);
-      Out.ar(out_bus, sig_out);
+      sig = Pan2.ar(o0, pn0) + Pan2.ar(o1, pn1)
+          + Pan2.ar(o2, pn2) + Pan2.ar(o3, pn3);
+      sig = Limiter.ar(sig * amp, 0.95);
+      Out.ar(net_out, sig);
 
-      // -- amplitude polls --
-      n_amps = [
-        Amplitude.ar(out_0, 0.01, 0.1),
-        Amplitude.ar(out_1, 0.01, 0.1),
-        Amplitude.ar(out_2, 0.01, 0.1),
-        Amplitude.ar(out_3, 0.01, 0.1)
+      amps = [
+        Amplitude.ar(o0, 0.01, 0.1),
+        Amplitude.ar(o1, 0.01, 0.1),
+        Amplitude.ar(o2, 0.01, 0.1),
+        Amplitude.ar(o3, 0.01, 0.1)
       ];
-      Out.kr(amp_bus, n_amps);
+      Out.kr(poll_bus, amps);
     }).add;
 
     context.server.sync;
 
     synth = Synth(\cipher_net, [
-      \out_bus, context.out_b.index,
-      \ext_in_bus, context.in_b.index,
-      \in_bus_0, nodeBuses[0].index,
-      \in_bus_1, nodeBuses[1].index,
-      \in_bus_2, nodeBuses[2].index,
-      \in_bus_3, nodeBuses[3].index,
-      \amp_bus, ampBus.index
+      \net_out, out_bus,
+      \ext_in, in_bus,
+      \nb0, nodeBuses[0].index,
+      \nb1, nodeBuses[1].index,
+      \nb2, nodeBuses[2].index,
+      \nb3, nodeBuses[3].index,
+      \poll_bus, ampBus.index,
+      \route_bus, routeBus.index
     ], context.xg);
 
     // -- commands --
-
-    // trig: inject morse impulse into node
-    // args: node(int 0-3), freq(float), dur(float), amp(float), type(int 0-3)
     this.addCommand("trig", "ifffi", { arg msg;
       var node, freq, dur, a, tp;
       node = msg[1].asInteger.clip(0, 3);
@@ -172,41 +158,42 @@ Engine_Cipher : CroneEngine {
       a    = msg[4].asFloat;
       tp   = msg[5].asInteger.clip(0, 3);
       Synth(\cipher_imp, [
-        \out_bus, nodeBuses[node].index,
+        \imp_bus, nodeBuses[node].index,
         \freq, freq, \dur, dur, \amp, a, \type, tp
       ], context.xg);
     });
 
-    // set network params
     this.addCommand("node_filt", "if", { arg msg;
-      synth.set(("filt_" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
+      synth.set(("filt" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
     });
     this.addCommand("node_res", "if", { arg msg;
-      synth.set(("res_" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
+      synth.set(("res" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
     });
     this.addCommand("node_ftype", "ii", { arg msg;
-      synth.set(("ftype_" ++ msg[1].asInteger).asSymbol, msg[2].asInteger);
+      synth.set(("ft" ++ msg[1].asInteger).asSymbol, msg[2].asInteger);
     });
     this.addCommand("node_dly", "if", { arg msg;
-      synth.set(("dly_" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
+      synth.set(("dt" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
     });
     this.addCommand("node_dfb", "if", { arg msg;
-      synth.set(("dfb_" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
+      synth.set(("fb" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
     });
     this.addCommand("node_drv", "if", { arg msg;
-      synth.set(("drv_" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
+      synth.set(("dv" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
     });
     this.addCommand("node_lvl", "if", { arg msg;
-      synth.set(("lvl_" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
+      synth.set(("lv" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
     });
     this.addCommand("node_pan", "if", { arg msg;
-      synth.set(("pan_" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
+      synth.set(("pn" ++ msg[1].asInteger).asSymbol, msg[2].asFloat);
     });
-    // routing matrix: row, col, value
+    // routing: write directly to control bus
     this.addCommand("route", "iif", { arg msg;
-      var key;
-      key = ("r_" ++ msg[1].asInteger ++ msg[2].asInteger).asSymbol;
-      synth.set(key, msg[3].asFloat.clip(0, 0.95));
+      var row, col, idx;
+      row = msg[1].asInteger.clip(0, 3);
+      col = msg[2].asInteger.clip(0, 3);
+      idx = row * 4 + col;
+      routeBus.setAt(idx, msg[3].asFloat.clip(0, 0.95));
     });
     this.addCommand("ext_lvl", "f", { arg msg;
       synth.set(\ext_lvl, msg[1].asFloat);
@@ -228,5 +215,6 @@ Engine_Cipher : CroneEngine {
     synth.free;
     nodeBuses.do({ |b| b.free });
     ampBus.free;
+    routeBus.free;
   }
 }

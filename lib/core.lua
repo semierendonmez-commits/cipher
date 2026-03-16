@@ -315,7 +315,7 @@ function Core.send_node(n)
   local i = n - 1
   engine.node_filt(i, nd.filt)
   engine.node_res(i, nd.res)
-  engine.node_ftype(i, nd.ftype)
+  engine.node_ftype(i, math.floor(nd.ftype))
   engine.node_dly(i, nd.dly)
   engine.node_dfb(i, nd.dfb)
   engine.node_drv(i, nd.drv)
