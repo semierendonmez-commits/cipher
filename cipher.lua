@@ -19,7 +19,7 @@ local screen_dirty = true
 local g = nil  -- grid device
 local grid_page = 1
 local grid_dirty = true
-local k1_held = false
+local k2_time = 0
 
 -- ============ GRID ============
 
@@ -227,7 +227,9 @@ end
 local function screen_loop()
   while true do
     clock.sleep(1 / 15)
-    if screen_dirty then
+    -- skip drawing when norns system menu is showing
+    local menu_active = _menu and _menu.mode
+    if screen_dirty and not menu_active then
       local ok, err = pcall(UI.draw, screen)
       if not ok then print("cipher draw error: " .. tostring(err)) end
       screen_dirty = false
@@ -262,12 +264,19 @@ function init()
   print("CIPHER: ready")
 end
 
+local page_acc = 0
+local k2_held = false
+
 function enc(n, d)
-  if k1_held then
-    -- K1+E1: page change
+  if k2_held then
+    -- K2+E1: page change
     if n == 1 then
-      if d > 0 then Core.next_page() else Core.prev_page() end
-      screen_dirty = true
+      page_acc = page_acc + d
+      if math.abs(page_acc) >= 3 then
+        if page_acc > 0 then Core.next_page() else Core.prev_page() end
+        page_acc = 0
+        screen_dirty = true
+      end
       return
     end
   end
@@ -276,13 +285,28 @@ function enc(n, d)
 end
 
 function key(n, z)
-  if n == 1 then
-    k1_held = (z == 1)
+  -- K1: don't intercept, let norns handle menu
+  if n == 2 then
+    if z == 1 then
+      k2_held = true
+      k2_time = util.time()
+    else
+      k2_held = false
+      page_acc = 0
+      -- short press = play/stop (only if not used for page change)
+      if util.time() - (k2_time or 0) < 0.3 then
+        Core.toggle_play()
+      end
+    end
+    screen_dirty = true
+    grid_dirty = true
     return
   end
-  Core.key(n, z)
-  screen_dirty = true
-  grid_dirty = true
+  if n == 3 and z == 1 then
+    Core.key(3, 1)
+    screen_dirty = true
+    grid_dirty = true
+  end
 end
 
 function cleanup()
