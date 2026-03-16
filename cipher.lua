@@ -266,26 +266,30 @@ end
 
 local page_acc = 0
 local k2_held = false
+local k1_held = false
 
 function enc(n, d)
-  if k2_held then
-    -- K2+E1: page change
-    if n == 1 then
-      page_acc = page_acc + d
-      if math.abs(page_acc) >= 3 then
-        if page_acc > 0 then Core.next_page() else Core.prev_page() end
-        page_acc = 0
-        screen_dirty = true
-      end
-      return
+  if n == 1 and (k1_held or k2_held) then
+    -- K1+E1 or K2+E1: page change
+    page_acc = page_acc + d
+    if math.abs(page_acc) >= 3 then
+      if page_acc > 0 then Core.next_page() else Core.prev_page() end
+      page_acc = 0
+      screen_dirty = true
     end
+    return
   end
   Core.enc(n, d)
   screen_dirty = true
 end
 
 function key(n, z)
-  -- K1: don't intercept, let norns handle menu
+  if n == 1 then
+    k1_held = (z == 1)
+    if z == 0 then page_acc = 0 end
+    -- don't consume: let norns also see K1
+    return
+  end
   if n == 2 then
     if z == 1 then
       k2_held = true
@@ -293,7 +297,6 @@ function key(n, z)
     else
       k2_held = false
       page_acc = 0
-      -- short press = play/stop (only if not used for page change)
       if util.time() - (k2_time or 0) < 0.3 then
         Core.toggle_play()
       end
